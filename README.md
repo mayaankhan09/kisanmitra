@@ -9,8 +9,8 @@ to use, into a single clear recommendation a farmer can act on.
 
 > Built for the Kaggle × Google *5-Day AI Agents Intensive* capstone — **Agents for Good** track.
 
-🔗 **Live app:** [your Streamlit URL here]
-🎥 **Demo video:** [your YouTube URL here]
+🔗 **Live app:** [[your Streamlit URL here](https://kisanmitra-homkspyaheer6qdoeekybm.streamlit.app/)]
+🎥 **Demo video:** [https://youtu.be/XE3Lz9SErfg]
 
 ---
 
