@@ -24,15 +24,44 @@ from mandi_data import get_mandi_price as _raw_mandi_price, load_store
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 MODEL = "gemini-2.5-flash"
 
-DISTRICT_COORDS = {
-    "Raipur": (21.2514, 81.6296),
-    "Durg": (21.1904, 81.2849),
-    "Bilaspur": (22.0797, 82.1409),
-    "Raigarh": (21.8974, 83.3950),
-    "Jagdalpur": (19.0748, 82.0119),
-    "Ambikapur": (23.1206, 83.1959),
-}
-CROPS = ["Paddy", "Rice", "Wheat", "Onion", "Tomato", "Potato", "Maize"]
+RAIPUR_FALLBACK = (21.2514, 81.6296)
+
+STATES = [
+    "Andhra Pradesh", "Assam", "Bihar", "Chhattisgarh", "Gujarat", "Haryana",
+    "Himachal Pradesh", "Jharkhand", "Karnataka", "Keralam", "Madhya Pradesh",
+    "Maharashtra", "Odisha", "Punjab", "Rajasthan", "Tamil Nadu", "Telangana",
+    "Uttar Pradesh", "Uttarakhand", "West Bengal",
+]
+CROPS = [
+    "Paddy", "Rice", "Wheat", "Maize", "Soyabean", "Cotton", "Groundnut",
+    "Gram", "Onion", "Tomato", "Potato", "Chilli", "Brinjal", "Cauliflower",
+    "Banana", "Mango",
+]
+
+@st.cache_data
+def geocode_place(place: str, state: str = ""):
+    """Resolve an Indian place name to (lat, lon) using Open-Meteo geocoding.
+    Prefers a result whose admin1 (state) matches `state`; falls back to
+    Raipur if the lookup fails or returns nothing.
+    """
+    try:
+        r = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": place, "count": 5, "country": "IN", "language": "en"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        results = r.json().get("results") or []
+    except Exception:
+        return RAIPUR_FALLBACK
+    if not results:
+        return RAIPUR_FALLBACK
+    if state:
+        for res in results:
+            if res.get("admin1", "").lower() == state.lower():
+                return res["latitude"], res["longitude"]
+    top = results[0]
+    return top["latitude"], top["longitude"]
 
 # ---------------------------------------------------------------------------
 # Load data + client once (cached so the app is fast)
@@ -51,8 +80,8 @@ def _get_client():
 # Tools (same logic as the notebook agent) — return clean text for Gemini
 # and ALSO expose raw data so the UI can show it.
 # ---------------------------------------------------------------------------
-def _weather_raw(district: str):
-    lat, lon = DISTRICT_COORDS.get(district, DISTRICT_COORDS["Raipur"])
+def _weather_raw(district: str, state: str):
+    lat, lon = geocode_place(district, state)
     params = {
         "latitude": lat, "longitude": lon,
         "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max",
@@ -63,14 +92,15 @@ def _weather_raw(district: str):
     return r.json()["daily"]
 
 def get_weather_for_district(district: str) -> str:
-    """Get the 7-day weather forecast for a district in Chhattisgarh, India.
+    """Get the 7-day weather forecast for a district in India.
     Use this to understand rainfall and temperature before advising about
     harvesting, spraying, or irrigation.
     Args:
         district: District name, e.g. 'Raipur', 'Durg', 'Bilaspur'.
     """
+    state = st.session_state.get("sel_state", "Chhattisgarh")
     try:
-        d = _weather_raw(district)
+        d = _weather_raw(district, state)
     except Exception as e:
         return f"Weather unavailable ({e})."
     lines = [f"{d['time'][i]}: {d['temperature_2m_min'][i]}-{d['temperature_2m_max'][i]}°C, "
@@ -86,9 +116,10 @@ def get_crop_price(commodity: str, district: str = "Raipur") -> str:
     prices with market and date.
     Args:
         commodity: Crop name, e.g. 'Paddy', 'Onion', 'Tomato', 'Wheat'.
-        district: Farmer's district in Chhattisgarh, e.g. 'Raipur'.
+        district: Farmer's district, e.g. 'Raipur'.
     """
-    res = _raw_mandi_price(commodity, state="Chhattisgarh", district=district,
+    state = st.session_state.get("sel_state", "Chhattisgarh")
+    res = _raw_mandi_price(commodity, state=state, district=district,
                            df=_STORE, limit=8)
     good = [r for r in res["records"]
             if r.get("modal_price") and r["modal_price"] >= 100]
@@ -99,7 +130,7 @@ def get_crop_price(commodity: str, district: str = "Raipur") -> str:
     return f"{res['summary']}\n" + "\n".join(lines)
 
 SYSTEM_PROMPT = """You are KisanMitra, a friendly farming advisor for small
-farmers in Chhattisgarh, India. Given a farmer's question, give ONE clear,
+farmers across India. Given a farmer's question, give ONE clear,
 practical recommendation.
 Rules:
 - ALWAYS reason across BOTH weather AND market price. Call both tools, then combine them.
@@ -139,13 +170,17 @@ if not GEMINI_API_KEY:
     st.error("No Gemini API key found. Add GEMINI_API_KEY to Streamlit secrets.")
     st.stop()
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
     crop = st.selectbox("Crop / फसल", CROPS, index=0)
 with col2:
-    district = st.selectbox("District / जिला", list(DISTRICT_COORDS.keys()), index=0)
+    state = st.selectbox("State / राज्य", STATES, index=STATES.index("Chhattisgarh"))
+with col3:
+    district = st.text_input("District / जिला", value="Raipur")
 
-default_q = f"I grow {crop.lower()} in {district}. Should I sell now or wait?"
+st.session_state["sel_state"] = state
+
+default_q = f"I grow {crop.lower()} in {district}, {state}. Should I sell now or wait?"
 question = st.text_area("Your question / आपका सवाल", value=default_q, height=80)
 
 if st.button("Ask KisanMitra / पूछें", type="primary"):
@@ -158,7 +193,7 @@ if st.button("Ask KisanMitra / पूछें", type="primary"):
             st.stop()
 
     # Transparency panel — show the raw data the agent reasoned over
-    with st.expander("📊 Data the agent used (live)"):
+    with st.expander(f"📊 Data the agent used for {district}, {state} (live)"):
         st.markdown("**Weather**")
         st.text(get_weather_for_district(district))
         st.markdown("**Mandi prices**")
